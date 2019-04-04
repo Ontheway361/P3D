@@ -11,39 +11,51 @@ import numpy as np
 import torch.nn as nn
 from functools import partial
 import torch.nn.functional as F
+from IPython import embed
 from torch.autograd import Variable
-from utils.bottleneck_utils import Bottleneck
+from utils.p3d_module import P3D_module
+
+times = 4
 
 class P3D(nn.Module):
 
-    def __init__(self, block, layers, modality = 'RGB',
-        shortcut_type = 'B', num_classes = 400, dropout = 0.5, ST_struc = ('A','B','C')):
+    def __init__(self, params_dict):
 
         super(P3D, self).__init__()
-        self.inplanes = 64
-        self.input_channel = 3 if modality=='RGB' else 2  # 2 is for optical flow
-        self.depth_3d  =  sum(layers[:3])# C3D layers are only (res2,res3,res4),  res5 is C2D
-        self.ST_struc  = ST_struc
-        self.layer_idx = 0
+        self.p3d_module  = params_dict.pop('p3d_module', P3D_module)
+        self.layers_list = params_dict.pop('layers_list', [3, 4, 6, 3])  # default ResNet-50
+        self.cc_type     = params_dict.pop('cc_type', 'A')
+        self.n_classes   = params_dict.pop('n_classes', 101)
+        self.in_channel  = params_dict.pop('in_channel', 3)
+        self.base_fmaps  = params_dict.pop('base_fmaps', 64)
+        self.layer_idx   = params_dict.pop('layer_idx', 0)
+        self.p_dropout   = params_dict.pop('p_dropout', 0.5)
+
+        self._build_layers()
+
+
+    def _build_layers(self):
+        ''' Build layers according to the style of resnet '''
+
+        self.p3d_layers  = sum(self.layers_list[:3])
+        self.times   = times
+        self.maxpool = nn.MaxPool3d(kernel_size=(2,1,1), stride=(2,1,1), padding=0)
+        self.avgpool = nn.AvgPool2d(kernel_size=(4,4), stride=1)    # default (5, 5) for (160, 160)-input
+        self.dropout = nn.Dropout(p=self.p_dropout)
 
         self.pre = nn.Sequential(
-             nn.Conv3d(self.input_channel, 64, kernel_size=(1,7,7), stride=(1,2,2), padding=(0,3,3), bias=False),
+             nn.Conv3d(self.in_channel, 64, kernel_size=(1,7,7), stride=(1,2,2), padding=(0,3,3), bias=False),
              nn.BatchNorm3d(64),
-             nn.ReLU(inplace=True)
-             nn.MaxPool3d(kernel_size=(2, 3, 3), stride=2, padding=(0,1,1))
+             nn.ReLU(inplace=True),
+             nn.MaxPool3d(kernel_size=(2,3,3), stride=2, padding=(0,1,1))
         )
+        self.layer1 = self._make_layer(64,  self.layers_list[0])
+        self.layer2 = self._make_layer(128, self.layers_list[1], stride=2)
+        self.layer3 = self._make_layer(256, self.layers_list[2], stride=2)
+        self.layer4 = self._make_layer(512, self.layers_list[3], stride=2)
+        self.fc     = nn.Linear(512*self.times, self.n_classes)
 
-        self.maxpool = nn.MaxPool3d(kernel_size=(2,1,1), stride=(2,1,1), padding=0)
-
-        self.layer1 = self._make_layer(block, 64,  layers[0], shortcut_type)
-        self.layer2 = self._make_layer(block, 128, layers[1], shortcut_type, stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], shortcut_type, stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], shortcut_type, stride=2)
-
-        self.avgpool = nn.AvgPool2d(kernel_size=(5, 5), stride=1)                              # pooling layer for res5.
-        self.dropout = nn.Dropout(p=dropout)
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
-
+        # Xavier-init
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -53,53 +65,78 @@ class P3D(nn.Module):
                 m.bias.data.zero_()
 
         # some private attribute
-        self.input_size = (self.input_channel,16,160,160)       # input of the network
-        self.input_mean = [0.485, 0.456, 0.406] if modality=='RGB' else [0.5]
-        self.input_std  = [0.229, 0.224, 0.225] if modality=='RGB' else [np.mean([0.229, 0.224, 0.225])]
+        self.input_size = (self.in_channel, 16, 160, 160)
+        self.input_mean = [0.485, 0.456, 0.406] if self.in_channel == 3 else [0.5000]
+        self.input_std  = [0.229, 0.224, 0.225] if self.in_channel == 3 else [0.2260]  # np.mean([0.229, 0.224, 0.225])
 
 
-    def _make_layer(self, block, planes, num_blocks, shortcut_type, stride=1):
-        '''
-        Generate the ResidualBlock
+    def _downsample(self, stage_fmaps, stride = 1):
+        ''' Generate the downsample method for following _make_layer '''
 
-        step - 1. prepare the downsample
-        step - 2. generate the layers
-        '''
+        downsample = None
 
-        downsample, stride_p, layers = None, stride, []
-
-        # step - 1
-        if self.layer_idx < self.depth_3d:
+        if self.layer_idx < self.p3d_layers:
 
             stride_p = 1 if self.layer_idx == 0 else (1, 2, 2)
 
-            if (stride != 1) or (self.inplanes != planes * block.expansion):
-                if shortcut_type == 'A':
-                    downsample = partial(block.downsample_basic_block, planes=planes * block.expansion, stride=stride)
+            if (stride != 1) or (self.base_fmaps != stage_fmaps*self.times):
+                if self.cc_type == 'A':
+                    downsample = partial(self.downsample_basic_block, planes=stage_fmaps*self.times, stride=stride)
                 else:
                     downsample = nn.Sequential(
-                        nn.Conv3d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride_p, bias=False),
-                        nn.BatchNorm3d(planes * block.expansion)
+                        nn.Conv3d(self.base_fmaps, stage_fmaps*self.times, kernel_size=1, stride=stride_p, bias=False),
+                        nn.BatchNorm3d(stage_fmaps*self.times)
                     )
         else:
-            if (stride != 1) or (self.inplanes != planes * block.expansion):
+            if (stride != 1) or (self.base_fmaps != stage_fmaps*self.times):
 
-                if shortcut_type == 'A':
-                    downsample = partial(block.downsample_basic_block, planes=planes * block.expansion, stride=stride)
+                if self.cc_type == 'A':
+                    downsample = partial(self.downsample_basic_block, planes=stage_fmaps*self.times, stride=stride)
                 else:
                     downsample = nn.Sequential(
-                        nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=2, bias=False),
-                        nn.BatchNorm2d(planes * block.expansion)
+                        nn.Conv2d(self.base_fmaps, stage_fmaps*self.times, kernel_size=1, stride=2, bias=False),
+                        nn.BatchNorm2d(stage_fmaps*self.times)
                     )
+        return downsample
 
-        layers.append(block(self.inplanes, planes, stride, downsample, layer_idx=self.layer_idx, \
-                                depth_3d=self.depth_3d, ST_struc=self.ST_struc))
+
+    def _make_layer(self, stage_fmaps, n_layers, stride = 1):
+        '''
+        Generate the ResidualModule
+
+        step - 1. prepare the downsample for first-layer of each residual modules
+        step - 2. build the first layer for residual block
+        step - 3. update the mid-variable
+        step - 4. build the remain layers for residual block
+        '''
+
+        stride_p, layers = stride, []
+
+        # step - 1
+        downsample = self._downsample(stage_fmaps, stride)
+
+        # step - 2
+        params_dict = {
+            'p3d_layers'  : self.p3d_layers,
+            'base_fmaps'  : self.base_fmaps,
+            'layer_idx'   : self.layer_idx,
+            'cc_type'     : self.cc_type,
+            'stage_fmaps' : stage_fmaps,
+            'downsample'  : downsample,
+            'stride'      : stride
+        }
+        layers.append(self.p3d_module(params_dict))
+
+        # step - 3
         self.layer_idx += 1
+        self.base_fmaps = stage_fmaps * self.times
 
-        self.inplanes = planes * block.expansion
-
-        for i in range(1, num_blocks):
-            layers.append(block(self.inplanes, planes, layer_idx=self.layer_idx, depth_3d=self.depth_3d, ST_struc=self.ST_struc))
+        # step - 4
+        del params_dict['stride']
+        del params_dict['downsample']
+        for i in range(1, n_layers):
+            params_dict['layer_idx'] = self.layer_idx
+            layers.append(self.p3d_module(params_dict))
             self.layer_idx += 1
 
         return nn.Sequential(*layers)
@@ -107,18 +144,36 @@ class P3D(nn.Module):
 
     def forward(self, x):
 
-        x = self._pre(x)
+        print('input size : ', x.shape)
+
+        x = self.pre(x)
+        print('after pre : ', x.shape)
+
         x = self.maxpool(self.layer1(x))  #  Part Res2
+        print('after layer1 : ', x.shape)
+
         x = self.maxpool(self.layer2(x))  #  Part Res3
+        print('after layer2 : ', x.shape)
+
         x = self.maxpool(self.layer3(x))  #  Part Res4
+        print('after layer3 : ', x.shape)
 
         sizes = x.size()
         x = x.view(-1,sizes[1],sizes[3],sizes[4])  #  Part Res5
+        print('before layer4, first view : ', x.shape)
+
         x = self.layer4(x)
+        print('after layer4 : ', x.shape)
+
         x = self.avgpool(x)
+        print('avgpool, (5, 5) : ', x.shape)
 
         x = x.view(-1,self.fc.in_features)
+        print('before fc, second view : ', x.shape)
+
         x = self.fc(self.dropout(x))
+        print('after fc : ', x.shape)
+
 
         return x
 
@@ -137,39 +192,47 @@ class P3D(nn.Module):
     def crop_size(self):
         return self.input_size[2]
 
+    @staticmethod
+    def downsample_basic_block(x, planes, stride):
+        ''' Padding in temporal dimension '''
+        out = F.avg_pool3d(x, kernel_size=1, stride=stride)
+        zero_pads = torch.Tensor(out.size(0), planes - out.size(1), out.size(2), \
+                                 out.size(3), out.size(4)).zero_()
+
+        # if isinstance(out.data, torch.cuda.FloatTensor):
+        #     zero_pads = zero_pads.cuda()
+
+        out = Variable(torch.cat([out.data, zero_pads], dim=1))
+
+        return out
 
 
-def P3D63(**kwargs):
-    ''' Construct a P3D63 modelbased on a ResNet-50-3D model '''
+def P3D_zoo(params_dict):
+    ''' Choose P3D-model from P3D63, P3D131, or P3D199 ... '''
 
-    model = P3D(Bottleneck, [3, 4, 6, 3], **kwargs)
+    model_type = params_dict.get('ResNet', 50)
 
-    return model
+    if model_type == 50:
+        params_dict['layers_list'] = [3, 4, 6, 3]
+    elif model_type == 101:
+        params_dict['layers_list'] = [3, 4, 23, 3]
+    elif model_type == 151:
+        params_dict['layers_list'] = [3, 8, 36, 3]
+    else:
+        raise TypeError('Unknown ResNet-id, it should be 50, 101, or 151 ..')
 
+    if params_dict.get('source', 'rgb') == 'rgb':
+        params_dict['in_channel'] = 3
+    else:
+        params_dict['in_channel'] = 2
 
-def P3D131(**kwargs):
-    ''' Construct a P3D131 model based on a ResNet-101-3D model '''
+    model = P3D(params_dict)
 
-    model = P3D(Bottleneck, [3, 4, 23, 3], **kwargs)
-
-    return model
-
-
-def P3D199(pretrained = False, modality = 'RGB', **kwargs):
-    ''' Construct a P3D199 model based on a ResNet-152-3D model '''
-
-    model = P3D(Bottleneck, [3, 8, 36, 3], modality=modality, **kwargs)
-
-    if pretrained == True:
-        if modality == 'RGB':
-            pretrained_file = 'p3d_rgb_199.checkpoint.pth.tar'
-        elif modality == 'Flow':
-            pretrained_file = 'p3d_flow_199.checkpoint.pth.tar'
-        weights = torch.load(pretrained_file)['state_dict']
+    if params_dict.get('pretrained', False):
+        weights = torch.load(params_dict['init_dir'])['state_dict']
         model.load_state_dict(weights)
 
     return model
-
 
 # custom operation
 def get_optim_policies(model = None, modality = 'RGB', enable_pbn = True):
