@@ -40,8 +40,7 @@ class P3D_module(nn.Module):
         ''' Build the p3d module '''
 
         stride_p = self.stride
-        print('check stride_p : ', stride_p)
-        
+
         if self.downsample is not None: stride_p = (1, 2, 2)
 
         if self.layer_idx < self.p3d_layers:

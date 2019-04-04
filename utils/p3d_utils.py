@@ -80,6 +80,7 @@ class P3D(nn.Module):
             stride_p = 1 if self.layer_idx == 0 else (1, 2, 2)
 
             if (stride != 1) or (self.base_fmaps != stage_fmaps*self.times):
+
                 if self.cc_type == 'A':
                     downsample = partial(self.downsample_basic_block, planes=stage_fmaps*self.times, stride=stride)
                 else:

@@ -11,7 +11,6 @@ from torchsummary import summary
 from IPython import embed
 
 
-
 if __name__ == '__main__':
 
     params_dict = {
@@ -29,7 +28,7 @@ if __name__ == '__main__':
     # embed()
     # summary(model, (3, 16, 224, 224))
     # model = model.cuda()
-    data = torch.autograd.Variable(torch.rand(1,3, 16, 128, 128))  # if modality=='Flow', please change the 2nd dimension 3==>2
-    # data = torch.autograd.Variable(torch.rand(1,3,16,112,112))
+    # data = torch.autograd.Variable(torch.rand(1,3, 16, 128, 128))  # if modality=='Flow', please change the 2nd dimension 3==>2
+    data = torch.autograd.Variable(torch.rand(1,3,16,112,112))
     out = model(data)
     print(out.shape)
