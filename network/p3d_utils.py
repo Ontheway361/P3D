@@ -13,7 +13,7 @@ from functools import partial
 import torch.nn.functional as F
 from IPython import embed
 from torch.autograd import Variable
-from utils.p3d_module import P3D_module
+from network.p3d_module import P3D_module
 
 times = 4
 
@@ -25,7 +25,7 @@ class P3D(nn.Module):
         self.p3d_module  = params_dict.pop('p3d_module', P3D_module)
         self.layers_list = params_dict.pop('layers_list', [3, 4, 6, 3])  # default ResNet-50
         self.cc_type     = params_dict.pop('cc_type', 'A')
-        self.n_classes   = params_dict.pop('n_classes', 101)
+        self.num_classes = params_dict.pop('num_classes', 101)
         self.in_channel  = params_dict.pop('in_channel', 3)
         self.base_fmaps  = params_dict.pop('base_fmaps', 64)
         self.layer_idx   = params_dict.pop('layer_idx', 0)
@@ -53,7 +53,7 @@ class P3D(nn.Module):
         self.layer2 = self._make_layer(128, self.layers_list[1], stride=2)
         self.layer3 = self._make_layer(256, self.layers_list[2], stride=2)
         self.layer4 = self._make_layer(512, self.layers_list[3], stride=2)
-        self.fc     = nn.Linear(512*self.times, self.n_classes)
+        self.fc     = nn.Linear(512*self.times, self.num_classes)
 
         # Xavier-init
         for m in self.modules():
@@ -206,42 +206,14 @@ class P3D(nn.Module):
             zero_pads = torch.Tensor(out.size(0), planes - out.size(1), out.size(2), \
                                      out.size(3)).zero_()
 
-        # if isinstance(out.data, torch.cuda.FloatTensor):
-        #     zero_pads = zero_pads.cuda()
+        if isinstance(out.data, torch.cuda.FloatTensor):
+            zero_pads = zero_pads.cuda()
 
         out = Variable(torch.cat([out.data, zero_pads], dim=1))
 
         return out
 
 
-def P3D_zoo(params_dict):
-    ''' Choose P3D-model from P3D63, P3D131, or P3D199 ... '''
-
-    model_type = params_dict.get('ResNet', 50)
-
-    if model_type == 50:
-        params_dict['layers_list'] = [3, 4, 6, 3]
-    elif model_type == 101:
-        params_dict['layers_list'] = [3, 4, 23, 3]
-    elif model_type == 151:
-        params_dict['layers_list'] = [3, 8, 36, 3]
-    else:
-        raise TypeError('Unknown ResNet-id, it should be 50, 101, or 151 ..')
-
-    if params_dict.get('source', 'rgb') == 'rgb':
-        params_dict['in_channel'] = 3
-    else:
-        params_dict['in_channel'] = 2
-
-    model = P3D(params_dict)
-
-    if params_dict.get('pretrained', False):
-        weights = torch.load(params_dict['init_dir'])['state_dict']
-        model.load_state_dict(weights)
-
-    return model
-
-# custom operation
 def get_optim_policies(model = None, modality = 'RGB', enable_pbn = True):
     '''
     first conv:         weight --> conv weight
@@ -315,3 +287,36 @@ def get_optim_policies(model = None, modality = 'RGB', enable_pbn = True):
         {'params': bn, 'lr_mult': 1, 'decay_mult': 0,
          'name': "BN scale/shift"},
     ]
+
+
+def P3D_zoo(params_dict):
+    ''' Choose P3D-model from P3D63, P3D131, or P3D199 ... '''
+
+    model_type = params_dict.get('ResNet', 50)
+
+    if model_type == 50:
+        params_dict['layers_list'] = [3, 4, 6, 3]
+        params_dict['model_name']  = 'P3D63'
+    elif model_type == 101:
+        params_dict['layers_list'] = [3, 4, 23, 3]
+        params_dict['model_name']  = 'P3D131'
+    elif model_type == 151:
+        params_dict['layers_list'] = [3, 8, 36, 3]
+        params_dict['model_name']  = 'P3D199'
+    else:
+        raise TypeError('Unknown ResNet-id, it should be 50, 101, or 151 ..')
+
+    if params_dict.get('source', 'rgb') == 'rgb':
+        params_dict['in_channel'] = 3
+    else:
+        params_dict['in_channel'] = 2
+
+    model = P3D(params_dict)
+    
+    # model = P3D(params_dict).to(params_dict['device'])
+    # if params_dict.get('pretrained', False):
+    #     pretrained_model = PathSet.pretrained_model_dir(params_dict['model_name'])
+    #     weights = torch.load(pretrained_model)['state_dict']
+    #     model.load_state_dict(weights)
+
+    return model

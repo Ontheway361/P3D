@@ -6,29 +6,31 @@ author: lujie
 """
 
 import torch
-from utils.p3d_utils import P3D_zoo
-from torchsummary import summary
-from IPython import embed
+from runner.p3d_runner import P3D_Train
 
 
 if __name__ == '__main__':
 
     params_dict = {
-        'ResNet'    : 50,
-        'init_dir'  : None,   # pretrained_file path
-        'pretrained': False,
-        'source'    : 'rgb',
-        'n_classes' : 101,
-        'cc_type'   : 'C',    # P3D-type
-        'p_dropout' : 0.5
+
+        'model_info'  : {
+             'ResNet'      : 50,
+             'source'      : 'rgb',
+             'num_classes' : 101,
+             'pretrained'  : False,  # NO-USE
+             'p_dropout'   : 0.5,
+             'cc_type'     : 'C',    # P3D-type
+        },
+        'dataset'     : 'ucf101',
+        'clip_len'    : 16,
+        'frame_mode'  : 1,  # 0 : continuous  |  1 : uniform intervals
+        'num_epochs'  : 20,
+        'resume_epoch': 15,   # default : 15
+        'batch_size'  : 8,
+        'save_freq'   : 5,
+        'useTest'     : True,
+        'lr'          : 3.5e-4,    # TODO
     }
 
-
-    model = P3D_zoo(params_dict)
-    # embed()
-    # summary(model, (3, 16, 224, 224))
-    # model = model.cuda()
-    # data = torch.autograd.Variable(torch.rand(1,3, 16, 128, 128))  # if modality=='Flow', please change the 2nd dimension 3==>2
-    data = torch.autograd.Variable(torch.rand(1,3,16,112,112))
-    out = model(data)
-    print(out.shape)
+    model_engine = P3D_Train(params_dict)
+    model_engine.model_train()
