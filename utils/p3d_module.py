@@ -74,6 +74,20 @@ class P3D_module(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
 
+    @staticmethod
+    def conv_S(in_planes, out_planes, stride = 1, padding = 1):
+        ''' Spatial convolution with filter 1 x 3 x 3 '''
+
+        return nn.Conv3d(in_planes, out_planes, kernel_size=(1,3,3), stride=1, padding=padding, bias=False)
+
+
+    @staticmethod
+    def conv_T(in_planes, out_planes, stride = 1, padding = 1):
+        ''' Temporal convolution with filter 3 x 1 x 1 '''
+
+        return nn.Conv3d(in_planes, out_planes, kernel_size=(3,1,1), stride=1, padding=padding, bias=False)
+
+
     def p3d_a(self, x):
         ''' P3D-A block '''
 
@@ -126,7 +140,6 @@ class P3D_module(nn.Module):
         out = self.relu(out)
 
         if self.layer_idx < self.p3d_layers:
-
             if self.cc_type == 'A':
                 out = self.p3d_a(out)
             elif self.cc_type == 'B':
@@ -136,7 +149,6 @@ class P3D_module(nn.Module):
             else:
                 raise TypeError('Unknown cc_type, it must be A, B, or C ...')
         else:
-
             out = self.conv_normal(out)   # normal is res5 part, C2D all.
             out = self.bn_normal(out)
             out = self.relu(out)
@@ -147,21 +159,8 @@ class P3D_module(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
 
+
         out += residual
         out = self.relu(out)
 
         return out
-
-
-    @staticmethod
-    def conv_S(in_planes, out_planes, stride = 1, padding = 1):
-        ''' Spatial convolution with filter 1 x 3 x 3 '''
-
-        return nn.Conv3d(in_planes, out_planes, kernel_size=(1,3,3), stride=1, padding=padding, bias=False)
-
-
-    @staticmethod
-    def conv_T(in_planes, out_planes, stride = 1, padding = 1):
-        ''' Temporal convolution with filter 3 x 1 x 1 '''
-
-        return nn.Conv3d(in_planes, out_planes, kernel_size=(3,1,1), stride=1, padding=padding, bias=False)

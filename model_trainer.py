@@ -19,7 +19,7 @@ if __name__ == '__main__':
         'pretrained': False,
         'source'    : 'rgb',
         'n_classes' : 101,
-        'cc_type'   : 'A',    # P3D-type
+        'cc_type'   : 'C',    # P3D-type
         'p_dropout' : 0.5
     }
 

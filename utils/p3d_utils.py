@@ -82,7 +82,7 @@ class P3D(nn.Module):
             if (stride != 1) or (self.base_fmaps != stage_fmaps*self.times):
 
                 if self.cc_type == 'A':
-                    downsample = partial(self.downsample_basic_block, planes=stage_fmaps*self.times, stride=stride)
+                    downsample = partial(self.downsample_basic_block, planes=stage_fmaps*self.times, stride=stride_p)
                 else:
                     downsample = nn.Sequential(
                         nn.Conv3d(self.base_fmaps, stage_fmaps*self.times, kernel_size=1, stride=stride_p, bias=False),
@@ -136,6 +136,7 @@ class P3D(nn.Module):
         del params_dict['stride']
         del params_dict['downsample']
         for i in range(1, n_layers):
+            params_dict['base_fmaps'] = self.base_fmaps
             params_dict['layer_idx'] = self.layer_idx
             layers.append(self.p3d_module(params_dict))
             self.layer_idx += 1
@@ -197,8 +198,13 @@ class P3D(nn.Module):
     def downsample_basic_block(x, planes, stride):
         ''' Padding in temporal dimension '''
         out = F.avg_pool3d(x, kernel_size=1, stride=stride)
-        zero_pads = torch.Tensor(out.size(0), planes - out.size(1), out.size(2), \
-                                 out.size(3), out.size(4)).zero_()
+        zero_pads = None
+        if len(out.shape) == 5:
+            zero_pads = torch.Tensor(out.size(0), planes - out.size(1), out.size(2), \
+                                     out.size(3), out.size(4)).zero_()
+        else:
+            zero_pads = torch.Tensor(out.size(0), planes - out.size(1), out.size(2), \
+                                     out.size(3)).zero_()
 
         # if isinstance(out.data, torch.cuda.FloatTensor):
         #     zero_pads = zero_pads.cuda()
